@@ -1,3 +1,29 @@
+'''
+
+	"attention_probs_dropout_prob": 0.1,
+	"hidden_act": "gelu",
+	"hidden_dropout_prob": 0.1,
+	"hidden_size": 768,
+	"initializer_range": 0.02,
+	"intermediate_size": 3072,
+	"max_position_embeddings": 512,
+	"relative_attention": true,
+	"position_buckets": 256,
+	"norm_rel_ebd": "layer_norm",
+	"share_att_key": true,
+	"pos_att_type": "p2c|c2p",
+	"layer_norm_eps": 1e-7,
+	"max_relative_positions": -1,
+	"position_biased_input": false,
+	"num_attention_heads": 12,
+	"attention_head_size": 64,
+	"num_hidden_layers": 12,
+	"type_vocab_size": 0,
+	"vocab_size": 128100
+}
+
+'''
+
 import os
 import requests
 import torch
@@ -7,6 +33,14 @@ from transformers import AutoTokenizer, AutoModel
 from tqdm import tqdm
 from huggingface_hub import configure_http_backend
 import argparse
+
+
+orch_org_gather = torch.gather
+
+def our_custom_gather(*args, **kwargs):
+  print(f'custom gather() shape: input={args[0].shape} {args[0].device}')
+  return orch_org_gather(*args, **kwargs)
+
 # === Optional: fix for SSL certificate errors when downloading from Hugging Face ===
 def backend_factory() -> requests.Session:
     session = requests.Session()
@@ -74,17 +108,21 @@ class DebertaSentimentClassifier(nn.Module):
 
 
 parser = argparse.ArgumentParser(description="Run DeBERTa inference with configurable backend and label")
-parser.add_argument("--backend", type=str, default="inductor", help="Torch compile backend (e.g. inductor, eager, aot_eager)")
+parser.add_argument("--compile", type=str, default="none", help="Torch compile backend (e.g. inductor, eager, aot_eager)")
 parser.add_argument("--samples", type=int, default=64, help="Samples default 64")
 parser.add_argument("--batch_size", type=int, default=8, help="Batch Size 8")
 parser.add_argument("--profile", action="store_true", help="Enable performance profiling")
 parser.add_argument("--dev", type=str, default="auto", help="Torch device")
+parser.add_argument("--custom_gather", action="store_true", help="Replace custom op gather")
 
 args = parser.parse_args()
 
 for key, value in vars(args).items():
     print(f"## Default setting for : {key}: {value}")
 
+
+if args.custom_gather:
+  torch.gather = our_custom_gather
 
 # === Setup: device, tokenizer, model ===
 
@@ -99,7 +137,9 @@ tokenizer = AutoTokenizer.from_pretrained(MODEL_DIR)
 model = DebertaSentimentClassifier(MODEL_DIR).to(device).eval()
 
 # === Optional: compile the model for better performance (requires PyTorch 2.0+) ===
-model = torch.compile(model, backend=args.backend)
+if args.compile != 'none':
+ print(f'Use torch.compile({args.compile})')
+ model = torch.compile(model, backend=args.compile)
 
 # === Load 1250 examples from the test split ===
 dataset = load_from_disk(DATASET_DIR)["test"].select(range(args.samples))
