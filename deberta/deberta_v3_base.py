@@ -1,0 +1,157 @@
+import os
+import requests
+import torch
+import torch.nn as nn
+from datasets import load_dataset, load_from_disk
+from transformers import AutoTokenizer, AutoModel
+from tqdm import tqdm
+from huggingface_hub import configure_http_backend
+import argparse
+# === Optional: fix for SSL certificate errors when downloading from Hugging Face ===
+def backend_factory() -> requests.Session:
+    session = requests.Session()
+    session.verify = False  # Allow self-signed certs
+    return session
+
+# === Check if a device is available (CUDA, NPU, or CPU) ===
+def device_exists(device_str):
+    if device_str.startswith('cuda'):
+        return torch.cuda.is_available() and int(device_str.split(':')[1]) < torch.cuda.device_count()
+    elif device_str.startswith('npu'):
+        try:
+            import torch_npu
+            return torch_npu.npu.is_available()
+        except ImportError:
+            return False
+    elif device_str == 'cpu':
+        return True
+    return False
+
+# === Get the first available device from priority list ===
+def getDevice():
+    for dev in ['cuda:0', 'npu:0']:
+        if device_exists(dev):
+            return dev
+    return 'cpu'
+
+# === Paths for local model and dataset ===
+MODEL_NAME = "microsoft/deberta-v3-base"
+MODEL_DIR = "./local_model"
+DATASET_DIR = "./imdb_dataset"
+
+# === Download and cache model if not already saved ===
+if not os.path.isdir(MODEL_DIR):
+    print("## Downloading model...")
+    configure_http_backend(backend_factory=backend_factory)
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+    model = AutoModel.from_pretrained(MODEL_NAME)
+    tokenizer.save_pretrained(MODEL_DIR)
+    model.save_pretrained(MODEL_DIR)
+
+# === Download and save IMDb dataset if not already available ===
+if not os.path.isdir(DATASET_DIR):
+    print("## Downloading dataset...")
+    configure_http_backend(backend_factory=backend_factory)
+    dataset = load_dataset("imdb")
+    dataset.save_to_disk(DATASET_DIR)
+
+# === Define a simple classifier model using DeBERTa as encoder ===
+class DebertaSentimentClassifier(nn.Module):
+    def __init__(self, model_dir, num_labels=2):
+        super().__init__()
+        self.encoder = AutoModel.from_pretrained(model_dir)
+        self.dropout = nn.Dropout(0.1)
+        self.classifier = nn.Linear(self.encoder.config.hidden_size, num_labels)
+
+    def forward(self, input_ids, attention_mask):
+        outputs = self.encoder(input_ids=input_ids, attention_mask=attention_mask)
+        pooled_output = outputs.last_hidden_state[:, 0]  # CLS token
+        pooled_output = self.dropout(pooled_output)
+        logits = self.classifier(pooled_output)
+        return logits
+
+
+
+
+parser = argparse.ArgumentParser(description="Run DeBERTa inference with configurable backend and label")
+parser.add_argument("--backend", type=str, default="inductor", help="Torch compile backend (e.g. inductor, eager, aot_eager)")
+parser.add_argument("--samples", type=int, default=64, help="Samples default 64")
+parser.add_argument("--batch_size", type=int, default=8, help="Batch Size 8")
+parser.add_argument("--profile", action="store_true", help="Enable performance profiling")
+parser.add_argument("--dev", type=str, default="auto", help="Torch device")
+
+args = parser.parse_args()
+
+for key, value in vars(args).items():
+    print(f"## Default setting for : {key}: {value}")
+
+
+# === Setup: device, tokenizer, model ===
+
+dev_str = getDevice() if args.dev == "auto" else args.dev
+
+device = torch.device( dev_str )
+
+
+print(f"## Execution device: {device}")
+
+tokenizer = AutoTokenizer.from_pretrained(MODEL_DIR)
+model = DebertaSentimentClassifier(MODEL_DIR).to(device).eval()
+
+# === Optional: compile the model for better performance (requires PyTorch 2.0+) ===
+model = torch.compile(model, backend=args.backend)
+
+# === Load 1250 examples from the test split ===
+dataset = load_from_disk(DATASET_DIR)["test"].select(range(args.samples))
+batch_size = args.batch_size
+predictions = []
+
+# === Warm-up / tracing for the compiled model ===
+example_texts = dataset[:batch_size]["text"]
+enc = tokenizer(example_texts, return_tensors="pt", padding=True, truncation=True, max_length=512)
+enc.pop("token_type_ids", None)
+enc = {k: v.to(device) for k, v in enc.items()}
+model(enc["input_ids"], enc["attention_mask"])  # Trace the model
+
+# === Inference loop over dataset ===
+
+def core_inference(prof=None):
+   
+   for i in tqdm(range(0, len(dataset), batch_size), desc="Running inference"):
+       batch_texts = dataset[i:i + batch_size]["text"]
+       inputs = tokenizer(batch_texts, return_tensors="pt", padding=True, truncation=True, max_length=512)
+       inputs.pop("token_type_ids", None)  # Some models don't use this
+       inputs = {k: v.to(device) for k, v in inputs.items()}
+   
+       with torch.no_grad():
+           logits = model(inputs["input_ids"], inputs["attention_mask"])
+           probs = torch.softmax(logits, dim=-1)
+           preds = torch.argmax(probs, dim=-1).cpu().tolist()
+           predictions.extend(preds)
+
+       if prof:
+           prof.step()    
+   
+   # === Print a few example predictions ===
+   for i in range(5):
+       print(f"\nText: {dataset[i]['text'][:100]}...")
+       print(f"Predicted Sentiment: {'Positive' if predictions[i] else 'Negative'}")
+   
+
+if args.profile:
+    with torch.profiler.profile(
+        schedule=torch.profiler.schedule(wait=1, warmup=1, active=3),
+      #  on_trace_ready=torch.profiler.tensorboard_trace_handler(profile_dir),
+        record_shapes=True,
+        profile_memory=True,
+        with_stack=True
+    ) as prof:
+      core_inference(prof)
+      
+
+    print(f"\n### Top operators by {device.type} time:")
+    print(prof.key_averages().table(sort_by=f"{device.type}_time_total", row_limit=20))
+
+
+else:
+   core_inference()
