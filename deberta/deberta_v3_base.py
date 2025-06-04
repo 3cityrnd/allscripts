@@ -33,6 +33,8 @@ from transformers import AutoTokenizer, AutoModel
 from tqdm import tqdm
 from huggingface_hub import configure_http_backend
 import argparse
+import numpy as np
+import random
 
 
 orch_org_gather = torch.gather
@@ -106,6 +108,17 @@ class DebertaSentimentClassifier(nn.Module):
 
 
 
+def SET_SEED(seed: int, cuda : None):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if cuda:
+       torch.cuda.manual_seed(seed)
+       torch.cuda.manual_seed_all(seed)
+       torch.backends.cudnn.deterministic = True
+       torch.backends.cudnn.benchmark = False
+    os.environ['PYTHONHASHSEED'] = str(seed)
+
 
 parser = argparse.ArgumentParser(description="Run DeBERTa inference with configurable backend and label")
 parser.add_argument("--compile", type=str, default="none", help="Torch compile backend (e.g. inductor, eager, aot_eager)")
@@ -114,6 +127,7 @@ parser.add_argument("--batch_size", type=int, default=8, help="Batch Size 8")
 parser.add_argument("--profile", action="store_true", help="Enable performance profiling")
 parser.add_argument("--dev", type=str, default="auto", help="Torch device")
 parser.add_argument("--custom_gather", action="store_true", help="Replace custom op gather")
+parser.add_argument("--seed", type=int, default=20, help="set seed")
 
 args = parser.parse_args()
 
@@ -129,6 +143,10 @@ if args.custom_gather:
 dev_str = getDevice() if args.dev == "auto" else args.dev
 
 device = torch.device( dev_str )
+
+if args.seed:
+   cdn=True if 'cuda' in dev_str else False 
+   SET_SEED(args.seed, cdn)
 
 
 print(f"## Execution device: {device}")
