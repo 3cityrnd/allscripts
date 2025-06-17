@@ -1,6 +1,8 @@
 import torch
 
 
+# code from transformers library
+
 def c2p_index_deberta_v1(query_layer, key_layer, max_relative_positions, rel_embeddings):
     @torch.jit.script
     def compute_attention_span(query_layer: torch.Tensor, key_layer: torch.Tensor, max_relative_positions: int):
