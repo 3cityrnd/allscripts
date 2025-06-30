@@ -1,0 +1,119 @@
+[
+
+    {
+
+        "op": "pimpek_gather",
+
+        "language": "cpp",
+
+ 
+
+ 
+
+        "input_desc": [
+
+            {
+
+                "name": "input",
+
+                "param_type": "required",
+
+                "format": [
+
+                    "ND"
+
+                ],
+
+                "type": [
+
+                    "float"
+
+                ]
+
+            },
+
+ 
+
+ 
+
+            {
+
+                "name": "index",
+
+                "param_type": "required",
+
+                "format": [
+
+                    "ND"
+
+                ],
+
+                "type": [
+
+                    "int32"
+
+                ]
+
+            }
+
+ 
+
+ 
+
+ 
+
+        ],
+
+        "output_desc": [
+
+            {
+
+                "name": "output",
+
+                "param_type": "required",
+
+                "format": [
+
+                    "ND"
+
+                ],
+
+                "type": [
+
+                    "float"
+
+                ]
+
+            }
+
+        ],
+
+ 
+
+        "attr" : [
+
+            {
+
+                 "name": "dim",
+
+                 "param_type" : "optional",
+
+                 "type" : "int",
+
+                 "default_value": -1
+
+ 
+
+ 
+
+            }
+
+ 
+
+ 
+
+        ]
+
+    }
+
+]
